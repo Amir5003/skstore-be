@@ -3,9 +3,7 @@ const { asyncHandler, AppError } = require('../middlewares/error.middleware');
 const {
   generateAccessToken,
   generateRefreshToken,
-  verifyRefreshToken,
-  setTokenCookies,
-  clearTokenCookies
+  verifyRefreshToken
 } = require('../utils/jwt.util');
 
 /**
@@ -41,9 +39,6 @@ const register = asyncHandler(async (req, res) => {
   user.refreshToken = refreshToken;
   await user.save();
 
-  // Set cookies
-  setTokenCookies(res, accessToken, refreshToken);
-
   res.status(201).json({
     success: true,
     message: 'User registered successfully',
@@ -55,7 +50,8 @@ const register = asyncHandler(async (req, res) => {
         phone: user.phone,
         role: user.role
       },
-      accessToken
+      accessToken,
+      refreshToken
     }
   });
 });
@@ -95,9 +91,6 @@ const login = asyncHandler(async (req, res) => {
   user.refreshToken = refreshToken;
   await user.save();
 
-  // Set cookies
-  setTokenCookies(res, accessToken, refreshToken);
-
   res.status(200).json({
     success: true,
     message: 'Login successful',
@@ -109,7 +102,8 @@ const login = asyncHandler(async (req, res) => {
         phone: user.phone,
         role: user.role
       },
-      accessToken
+      accessToken,
+      refreshToken
     }
   });
 });
@@ -140,7 +134,10 @@ const logout = asyncHandler(async (req, res) => {
  * @access  Public
  */
 const refresh = asyncHandler(async (req, res) => {
-  const { refreshToken } = req.cookies;
+  // Get refresh token from body or Authorization header
+  const refreshToken = req.body.refreshToken || 
+                       (req.headers.authorization?.startsWith('Bearer') ? 
+                        req.headers.authorization.split(' ')[1] : null);
 
   if (!refreshToken) {
     throw new AppError('Refresh token not found', 401);
@@ -164,14 +161,12 @@ const refresh = asyncHandler(async (req, res) => {
   user.refreshToken = newRefreshToken;
   await user.save();
 
-  // Set new cookies
-  setTokenCookies(res, newAccessToken, newRefreshToken);
-
   res.status(200).json({
     success: true,
     message: 'Token refreshed successfully',
     data: {
-      accessToken: newAccessToken
+      accessToken: newAccessToken,
+      refreshToken: newRefreshToken
     }
   });
 });
