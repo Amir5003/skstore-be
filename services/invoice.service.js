@@ -5,7 +5,7 @@ const path = require('path');
 /**
  * Generate PDF invoice
  */
-const generateInvoice = async (order, user) => {
+const generateInvoice = async (order, user, shop, shopOwner) => {
   return new Promise((resolve, reject) => {
     try {
       // Create PDF document
@@ -26,48 +26,85 @@ const generateInvoice = async (order, user) => {
       const writeStream = fs.createWriteStream(filepath);
       doc.pipe(writeStream);
 
-      // Add header
+      // Add header with Shop details
       doc
         .fontSize(20)
         .text('INVOICE', 50, 50, { align: 'center' })
-        .fontSize(10)
-        .text('SKStore E-commerce', 50, 80, { align: 'center' })
-        .moveDown();
+        .fontSize(14)
+        .text(shop.name, 50, 80, { align: 'center' })
+        .fontSize(10);
+      
+      // Add shop contact details (use shop contact or fallback to owner)
+      let headerY = 100;
+      const contactEmail = shop.contact?.email || shopOwner?.email;
+      const contactPhone = shop.contact?.phone || shopOwner?.phone;
+      const contactWhatsapp = shop.contact?.whatsapp || contactPhone;
+      
+      if (contactEmail) {
+        doc.text(`Email: ${contactEmail}`, 50, headerY, { align: 'center' });
+        headerY += 15;
+      }
+      if (contactPhone) {
+        doc.text(`Phone: ${contactPhone}`, 50, headerY, { align: 'center' });
+        headerY += 15;
+      }
+      if (contactWhatsapp && contactWhatsapp !== contactPhone) {
+        doc.text(`WhatsApp: ${contactWhatsapp}`, 50, headerY, { align: 'center' });
+        headerY += 15;
+      }
+      if (shop.address) {
+        const address = shop.address;
+        let addressText = '';
+        if (address.addressLine1) addressText += address.addressLine1 + ', ';
+        if (address.addressLine2) addressText += address.addressLine2 + ', ';
+        if (address.city) addressText += address.city + ', ';
+        if (address.state) addressText += address.state + ' ';
+        if (address.pincode) addressText += '- ' + address.pincode;
+        if (addressText) {
+          doc.text(addressText, 50, headerY, { align: 'center' });
+          headerY += 15;
+        }
+      }
+      
+      doc.moveDown();
 
       // Add invoice details
+      const invoiceDetailsY = headerY + 20;
       doc
         .fontSize(12)
-        .text(`Invoice Number: ${invoiceNumber}`, 50, 120)
-        .text(`Order Number: ${order.orderNumber}`, 50, 140)
-        .text(`Invoice Date: ${new Date().toLocaleDateString()}`, 50, 160)
-        .text(`Order Date: ${new Date(order.createdAt).toLocaleDateString()}`, 50, 180)
+        .text(`Invoice Number: ${invoiceNumber}`, 50, invoiceDetailsY)
+        .text(`Order Number: ${order.orderNumber}`, 50, invoiceDetailsY + 20)
+        .text(`Invoice Date: ${new Date().toLocaleDateString()}`, 50, invoiceDetailsY + 40)
+        .text(`Order Date: ${new Date(order.createdAt).toLocaleDateString()}`, 50, invoiceDetailsY + 60)
         .moveDown();
 
       // Add customer details
+      const customerY = invoiceDetailsY + 100;
       doc
         .fontSize(14)
-        .text('Bill To:', 50, 220)
+        .text('Bill To:', 50, customerY)
         .fontSize(11)
-        .text(user.name, 50, 240)
-        .text(user.email, 50, 255)
-        .text(user.phone, 50, 270)
+        .text(user.name, 50, customerY + 20)
+        .text(user.email, 50, customerY + 35)
+        .text(user.phone, 50, customerY + 50)
         .moveDown();
 
       // Add shipping address
-      const address = order.shippingAddress;
+      const shippingY = customerY + 90;
+      const shippingAddress = order.shippingAddress;
       doc
         .fontSize(14)
-        .text('Ship To:', 50, 310)
+        .text('Ship To:', 50, shippingY)
         .fontSize(11)
-        .text(address.fullName, 50, 330)
-        .text(address.addressLine1, 50, 345)
-        .text(address.addressLine2 || '', 50, 360)
-        .text(`${address.city}, ${address.state} - ${address.pincode}`, 50, 375)
-        .text(address.country, 50, 390)
+        .text(shippingAddress.fullName, 50, shippingY + 20)
+        .text(shippingAddress.addressLine1, 50, shippingY + 35)
+        .text(shippingAddress.addressLine2 || '', 50, shippingY + 50)
+        .text(`${shippingAddress.city}, ${shippingAddress.state} - ${shippingAddress.pincode}`, 50, shippingY + 65)
+        .text(shippingAddress.country, 50, shippingY + 80)
         .moveDown();
 
       // Add items table header
-      const tableTop = 430;
+      const tableTop = shippingY + 120;
       doc
         .fontSize(11)
         .text('Item', 50, tableTop, { bold: true })
@@ -88,8 +125,8 @@ const generateInvoice = async (order, user) => {
           .fontSize(10)
           .text(item.name, 50, yPosition, { width: 220 })
           .text(item.quantity, 300, yPosition)
-          .text(`₹${item.finalPrice}`, 370, yPosition)
-          .text(`₹${item.subtotal}`, 450, yPosition);
+          .text(`Rs.${item.finalPrice}`, 370, yPosition)
+          .text(`Rs.${item.subtotal}`, 450, yPosition);
         
         yPosition += 25;
       });
@@ -106,34 +143,34 @@ const generateInvoice = async (order, user) => {
       doc
         .fontSize(11)
         .text('Subtotal:', 370, yPosition)
-        .text(`₹${order.subtotal}`, 450, yPosition);
+        .text(`Rs.${order.subtotal}`, 450, yPosition);
 
       if (order.discount > 0) {
         yPosition += 20;
         doc
           .text('Discount:', 370, yPosition)
-          .text(`-₹${order.discount}`, 450, yPosition);
+          .text(`-Rs.${order.discount}`, 450, yPosition);
       }
 
       if (order.shippingCharges > 0) {
         yPosition += 20;
         doc
           .text('Shipping:', 370, yPosition)
-          .text(`₹${order.shippingCharges}`, 450, yPosition);
+          .text(`Rs.${order.shippingCharges}`, 450, yPosition);
       }
 
       if (order.tax > 0) {
         yPosition += 20;
         doc
           .text('Tax:', 370, yPosition)
-          .text(`₹${order.tax}`, 450, yPosition);
+          .text(`Rs.${order.tax}`, 450, yPosition);
       }
 
       yPosition += 20;
       doc
         .fontSize(13)
         .text('Total:', 370, yPosition, { bold: true })
-        .text(`₹${order.totalAmount}`, 450, yPosition);
+        .text(`Rs.${order.totalAmount}`, 450, yPosition);
 
       // Add payment method
       yPosition += 40;
@@ -142,11 +179,27 @@ const generateInvoice = async (order, user) => {
         .text(`Payment Method: ${order.paymentMethod}`, 50, yPosition)
         .text(`Payment Status: ${order.paymentStatus}`, 50, yPosition + 20);
 
-      // Add footer
+      // Add footer with shop details
+      yPosition += 60;
       doc
         .fontSize(10)
-        .text('Thank you for shopping with SKStore!', 50, 700, { align: 'center' })
-        .text('For any queries, contact us at support@skstore.com', 50, 720, { align: 'center' });
+        .text(`Thank you for shopping with ${shop.name}!`, 50, yPosition, { align: 'center' });
+      
+      const footerEmail = shop.contact?.email || shopOwner?.email;
+      const footerPhone = shop.contact?.phone || shopOwner?.phone;
+      
+      if (footerEmail || footerPhone) {
+        yPosition += 15;
+        let contactText = 'For any queries, contact us';
+        if (footerEmail && footerPhone) {
+          contactText += ` at ${footerEmail} or call ${footerPhone}`;
+        } else if (footerEmail) {
+          contactText += ` at ${footerEmail}`;
+        } else if (footerPhone) {
+          contactText += ` at ${footerPhone}`;
+        }
+        doc.text(contactText, 50, yPosition, { align: 'center' });
+      }
 
       // Finalize PDF
       doc.end();

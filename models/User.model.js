@@ -40,6 +40,13 @@ const addressSchema = new mongoose.Schema({
 }, { _id: true });
 
 const userSchema = new mongoose.Schema({
+  // CRITICAL: Multi-tenancy - every user belongs to a shop
+  shopId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Shop',
+    required: [true, 'Shop ID is required'],
+    index: true
+  },
   name: {
     type: String,
     required: [true, 'Name is required'],
@@ -49,7 +56,6 @@ const userSchema = new mongoose.Schema({
   email: {
     type: String,
     required: [true, 'Email is required'],
-    unique: true,
     lowercase: true,
     trim: true,
     match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, 'Please provide a valid email']
@@ -57,7 +63,6 @@ const userSchema = new mongoose.Schema({
   phone: {
     type: String,
     required: [true, 'Phone number is required'],
-    unique: true,
     match: [/^[0-9]{10}$/, 'Please provide a valid 10-digit phone number']
   },
   password: {
@@ -66,15 +71,34 @@ const userSchema = new mongoose.Schema({
     minlength: [6, 'Password must be at least 6 characters'],
     select: false
   },
+  // Role-based access control
   role: {
     type: String,
-    enum: ['user', 'admin'],
-    default: 'user'
+    enum: ['OWNER', 'STAFF', 'CUSTOMER'],
+    required: [true, 'Role is required']
   },
-  status: {
-    type: String,
-    enum: ['active', 'blocked'],
-    default: 'active'
+  // Staff permissions (only applicable for STAFF role)
+  permissions: {
+    canManageProducts: {
+      type: Boolean,
+      default: false
+    },
+    canManageOrders: {
+      type: Boolean,
+      default: false
+    },
+    canManageCustomers: {
+      type: Boolean,
+      default: false
+    },
+    canViewReports: {
+      type: Boolean,
+      default: false
+    }
+  },
+  isActive: {
+    type: Boolean,
+    default: true
   },
   addresses: [addressSchema],
   refreshToken: {
@@ -85,7 +109,8 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
-  deletedAt: Date
+  deletedAt: Date,
+  lastLogin: Date
 }, {
   timestamps: true
 });
@@ -111,6 +136,14 @@ userSchema.pre(/^find/, function(next) {
   this.where({ isDeleted: false });
   next();
 });
+
+// CRITICAL: Multi-tenancy indexes
+// Email is unique per shop, not globally
+userSchema.index({ shopId: 1, email: 1 }, { unique: true });
+userSchema.index({ shopId: 1, phone: 1 }, { unique: true });
+userSchema.index({ shopId: 1, role: 1 });
+userSchema.index({ shopId: 1, isActive: 1 });
+userSchema.index({ shopId: 1, createdAt: -1 });
 
 const User = mongoose.model('User', userSchema);
 

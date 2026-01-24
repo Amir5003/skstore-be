@@ -1,6 +1,7 @@
 const Cart = require('../models/Cart.model');
 const Product = require('../models/Product.model');
 const { asyncHandler, AppError } = require('../middlewares/error.middleware');
+const { shopQuery } = require('../middlewares/tenantIsolation.middleware');
 
 /**
  * @desc    Get user cart
@@ -8,10 +9,12 @@ const { asyncHandler, AppError } = require('../middlewares/error.middleware');
  * @access  Private
  */
 const getCart = asyncHandler(async (req, res) => {
-  let cart = await Cart.findOne({ user: req.user._id }).populate('items.product');
+  // CRITICAL: Find cart with tenant isolation
+  let cart = await Cart.findOne(shopQuery(req, { user: req.user._id })).populate('items.product');
 
   if (!cart) {
-    cart = await Cart.create({ user: req.user._id, items: [] });
+    // CRITICAL: Create cart with shopId
+    cart = await Cart.create({ shopId: req.shopId, user: req.user._id, items: [] });
   }
 
   res.status(200).json({
@@ -28,8 +31,8 @@ const getCart = asyncHandler(async (req, res) => {
 const addToCart = asyncHandler(async (req, res) => {
   const { productId, quantity = 1 } = req.body;
 
-  // Validate product
-  const product = await Product.findById(productId);
+  // CRITICAL: Validate product with tenant isolation
+  const product = await Product.findOne(shopQuery(req, { _id: productId }));
   if (!product) {
     throw new AppError('Product not found', 404);
   }
@@ -42,10 +45,10 @@ const addToCart = asyncHandler(async (req, res) => {
     throw new AppError('Insufficient stock', 400);
   }
 
-  // Get or create cart
-  let cart = await Cart.findOne({ user: req.user._id });
+  // Get or create cart with tenant isolation
+  let cart = await Cart.findOne(shopQuery(req, { user: req.user._id }));
   if (!cart) {
-    cart = new Cart({ user: req.user._id, items: [] });
+    cart = new Cart({ shopId: req.shopId, user: req.user._id, items: [] });
   }
 
   // Check if product already in cart
@@ -96,7 +99,8 @@ const updateCartItem = asyncHandler(async (req, res) => {
     throw new AppError('Quantity must be at least 1', 400);
   }
 
-  const cart = await Cart.findOne({ user: req.user._id });
+  // CRITICAL: Find cart with tenant isolation
+  const cart = await Cart.findOne(shopQuery(req, { user: req.user._id }));
   if (!cart) {
     throw new AppError('Cart not found', 404);
   }
@@ -110,8 +114,8 @@ const updateCartItem = asyncHandler(async (req, res) => {
     throw new AppError('Item not found in cart', 404);
   }
 
-  // Validate stock
-  const product = await Product.findById(productId);
+  // Validate stock with tenant isolation
+  const product = await Product.findOne(shopQuery(req, { _id: productId }));
   if (!product) {
     throw new AppError('Product not found', 404);
   }
@@ -140,7 +144,8 @@ const updateCartItem = asyncHandler(async (req, res) => {
 const removeFromCart = asyncHandler(async (req, res) => {
   const { productId } = req.params;
 
-  const cart = await Cart.findOne({ user: req.user._id });
+  // CRITICAL: Find cart with tenant isolation
+  const cart = await Cart.findOne(shopQuery(req, { user: req.user._id }));
   if (!cart) {
     throw new AppError('Cart not found', 404);
   }
@@ -166,7 +171,8 @@ const removeFromCart = asyncHandler(async (req, res) => {
  * @access  Private
  */
 const clearCart = asyncHandler(async (req, res) => {
-  const cart = await Cart.findOne({ user: req.user._id });
+  // CRITICAL: Find cart with tenant isolation
+  const cart = await Cart.findOne(shopQuery(req, { user: req.user._id }));
   
   if (cart) {
     cart.items = [];

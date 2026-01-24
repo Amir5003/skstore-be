@@ -27,11 +27,17 @@ const cartItemSchema = new mongoose.Schema({
 }, { _id: false });
 
 const cartSchema = new mongoose.Schema({
+  // CRITICAL: Multi-tenancy - every cart belongs to a shop
+  shopId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Shop',
+    required: [true, 'Shop ID is required'],
+    index: true
+  },
   user: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true,
-    unique: true
+    required: true
   },
   items: [cartItemSchema],
   totalItems: {
@@ -62,6 +68,11 @@ cartSchema.pre('save', function(next) {
   this.finalAmount = this.items.reduce((sum, item) => sum + (item.finalPrice * item.quantity), 0);
   next();
 });
+
+// CRITICAL: Multi-tenancy indexes
+// User can have only one cart per shop
+cartSchema.index({ shopId: 1, user: 1 }, { unique: true });
+cartSchema.index({ shopId: 1, updatedAt: -1 });
 
 const Cart = mongoose.model('Cart', cartSchema);
 

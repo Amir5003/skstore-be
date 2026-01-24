@@ -1,6 +1,13 @@
 const mongoose = require('mongoose');
 
 const productSchema = new mongoose.Schema({
+  // CRITICAL: Multi-tenancy - every product belongs to a shop
+  shopId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Shop',
+    required: [true, 'Shop ID is required'],
+    index: true
+  },
   name: {
     type: String,
     required: [true, 'Product name is required'],
@@ -9,7 +16,6 @@ const productSchema = new mongoose.Schema({
   },
   slug: {
     type: String,
-    unique: true,
     lowercase: true
   },
   description: {
@@ -21,6 +27,7 @@ const productSchema = new mongoose.Schema({
     type: Number,
     required: [true, 'Product price is required'],
     min: [0, 'Price cannot be negative']
+    // Price is per dozen (12 pieces)
   },
   discount: {
     type: Number,
@@ -36,6 +43,7 @@ const productSchema = new mongoose.Schema({
     required: [true, 'Stock quantity is required'],
     default: 0,
     min: [0, 'Stock cannot be negative']
+    // Stock is tracked in dozens
   },
   images: [{
     type: String
@@ -99,8 +107,13 @@ productSchema.pre(/^find/, function(next) {
   next();
 });
 
-// Index for better search performance
-productSchema.index({ name: 'text', description: 'text' });
+// CRITICAL: Multi-tenancy indexes
+// Slug is unique per shop, not globally
+productSchema.index({ shopId: 1, slug: 1 }, { unique: true });
+productSchema.index({ shopId: 1, category: 1 });
+productSchema.index({ shopId: 1, isActive: 1 });
+productSchema.index({ shopId: 1, createdAt: -1 });
+productSchema.index({ shopId: 1, name: 'text', description: 'text' });
 productSchema.index({ category: 1, isActive: 1 });
 
 const Product = mongoose.model('Product', productSchema);

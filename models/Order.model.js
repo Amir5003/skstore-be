@@ -67,15 +67,26 @@ const shippingAddressSchema = new mongoose.Schema({
 }, { _id: false });
 
 const orderSchema = new mongoose.Schema({
+  // CRITICAL: Multi-tenancy - every order belongs to a shop
+  shopId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Shop',
+    required: [true, 'Shop ID is required'],
+    index: true
+  },
   orderNumber: {
     type: String,
-    unique: true,
     required: true
   },
   user: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true
+  },
+  // Customer reference (for Phase 1: orders created by shop staff)
+  customer: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Customer'
   },
   items: [orderItemSchema],
   shippingAddress: {
@@ -162,9 +173,14 @@ orderSchema.pre('save', function(next) {
   next();
 });
 
-// Index for better query performance
-orderSchema.index({ user: 1, createdAt: -1 });
-orderSchema.index({ orderStatus: 1 });
+// CRITICAL: Multi-tenancy indexes
+// Order number is unique per shop, not globally
+orderSchema.index({ shopId: 1, orderNumber: 1 }, { unique: true });
+orderSchema.index({ shopId: 1, user: 1, createdAt: -1 });
+orderSchema.index({ shopId: 1, customer: 1 }, { sparse: true });
+orderSchema.index({ shopId: 1, orderStatus: 1 });
+orderSchema.index({ shopId: 1, createdAt: -1 });
+orderSchema.index({ shopId: 1, paymentStatus: 1 });
 
 const Order = mongoose.model('Order', orderSchema);
 

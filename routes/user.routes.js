@@ -9,12 +9,13 @@ const {
   getOrderHistory
 } = require('../controllers/user.controller');
 const { protect } = require('../middlewares/auth.middleware');
+const { tenantIsolation } = require('../middlewares/tenantIsolation.middleware');
 const validate = require('../middlewares/validate.middleware');
 
 const router = express.Router();
 
-// All user routes require authentication
-router.use(protect);
+// All user routes require authentication and tenant isolation
+router.use(protect, tenantIsolation);
 
 // Profile
 router.get('/profile', getProfile);

@@ -5,13 +5,17 @@ const AuditLog = require('../models/AuditLog.model');
 const { asyncHandler, AppError } = require('../middlewares/error.middleware');
 const { sendOrderStatusEmail, sendOrderStatusWhatsApp } = require('../services/email.service');
 const { sendOrderStatusWhatsApp: sendWhatsApp } = require('../services/whatsapp.service');
+const { shopQuery } = require('../middlewares/tenantIsolation.middleware');
 
 /**
- * @desc    Get dashboard statistics
+ * @desc    Get dashboard statistics (OWNER/STAFF with permission)
  * @route   GET /api/admin/dashboard/stats
- * @access  Private/Admin
+ * @access  Private
  */
 const getDashboardStats = asyncHandler(async (req, res) => {
+  // CRITICAL: All queries must be scoped to shop
+  const baseQuery = { shopId: req.shopId };
+
   const [
     totalUsers,
     totalProducts,
@@ -20,24 +24,25 @@ const getDashboardStats = asyncHandler(async (req, res) => {
     pendingOrders,
     revenue
   ] = await Promise.all([
-    User.countDocuments(),
-    Product.countDocuments(),
-    Order.countDocuments(),
-    Product.countDocuments({ isActive: true }),
-    Order.countDocuments({ orderStatus: 'PLACED' }),
+    User.countDocuments(baseQuery),
+    Product.countDocuments(baseQuery),
+    Order.countDocuments(baseQuery),
+    Product.countDocuments({ ...baseQuery, isActive: true }),
+    Order.countDocuments({ ...baseQuery, orderStatus: 'PLACED' }),
     Order.aggregate([
-      { $match: { orderStatus: { $ne: 'CANCELLED' } } },
+      { $match: { ...baseQuery, orderStatus: { $ne: 'CANCELLED' } } },
       { $group: { _id: null, total: { $sum: '$totalAmount' } } }
     ])
   ]);
 
-  // Daily revenue (last 7 days)
+  // Daily revenue (last 7 days) - scoped to shop
   const last7Days = new Date();
   last7Days.setDate(last7Days.getDate() - 7);
 
   const dailyRevenue = await Order.aggregate([
     {
       $match: {
+        ...baseQuery,
         createdAt: { $gte: last7Days },
         orderStatus: { $ne: 'CANCELLED' }
       }
@@ -52,13 +57,14 @@ const getDashboardStats = asyncHandler(async (req, res) => {
     { $sort: { _id: 1 } }
   ]);
 
-  // Monthly revenue (last 6 months)
+  // Monthly revenue (last 6 months) - scoped to shop
   const last6Months = new Date();
   last6Months.setMonth(last6Months.getMonth() - 6);
 
   const monthlyRevenue = await Order.aggregate([
     {
       $match: {
+        ...baseQuery,
         createdAt: { $gte: last6Months },
         orderStatus: { $ne: 'CANCELLED' }
       }
@@ -73,14 +79,15 @@ const getDashboardStats = asyncHandler(async (req, res) => {
     { $sort: { _id: 1 } }
   ]);
 
-  // Low stock alerts
+  // Low stock alerts - scoped to shop
   const lowStockProducts = await Product.find({
+    ...baseQuery,
     stock: { $lt: 10 },
     isActive: true
   }).limit(10);
 
-  // Recent orders
-  const recentOrders = await Order.find()
+  // Recent orders - scoped to shop
+  const recentOrders = await Order.find(baseQuery)
     .populate('user', 'name email')
     .sort('-createdAt')
     .limit(10);
@@ -103,14 +110,15 @@ const getDashboardStats = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc    Get all orders (Admin)
+ * @desc    Get all orders (OWNER/STAFF with permission)
  * @route   GET /api/admin/orders
- * @access  Private/Admin
+ * @access  Private
  */
 const getAllOrders = asyncHandler(async (req, res) => {
   const { page = 1, limit = 20, status, search } = req.query;
 
-  const query = {};
+  // CRITICAL: Base query with tenant isolation
+  const query = shopQuery(req);
   if (status) query.orderStatus = status;
   if (search) {
     query.$or = [
@@ -143,9 +151,9 @@ const getAllOrders = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc    Update order status (Admin)
+ * @desc    Update order status (OWNER/STAFF with permission)
  * @route   PATCH /api/admin/orders/:id/status
- * @access  Private/Admin
+ * @access  Private
  */
 const updateOrderStatus = asyncHandler(async (req, res) => {
   const { status, note } = req.body;
@@ -155,7 +163,8 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
     throw new AppError('Invalid order status', 400);
   }
 
-  const order = await Order.findById(req.params.id);
+  // CRITICAL: Find order with tenant isolation
+  const order = await Order.findOne(shopQuery(req, { _id: req.params.id }));
   if (!order) {
     throw new AppError('Order not found', 404);
   }
@@ -188,14 +197,15 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc    Get all users (Admin)
+ * @desc    Get all users/staff (OWNER or STAFF with permission)
  * @route   GET /api/admin/users
- * @access  Private/Admin
+ * @access  Private
  */
 const getAllUsers = asyncHandler(async (req, res) => {
   const { page = 1, limit = 20, search, status } = req.query;
 
-  const query = {};
+  // CRITICAL: Base query with tenant isolation
+  const query = shopQuery(req);
   if (status) query.status = status;
   if (search) {
     query.$or = [
@@ -230,24 +240,31 @@ const getAllUsers = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc    Update user (Admin)
+ * @desc    Update user (OWNER only)
  * @route   PUT /api/admin/users/:id
- * @access  Private/Admin
+ * @access  Private/OWNER
  */
 const updateUser = asyncHandler(async (req, res) => {
-  const { name, email, phone, role, status } = req.body;
+  const { name, email, phone, role, status, permissions } = req.body;
 
-  const user = await User.findById(req.params.id);
+  // CRITICAL: Find user with tenant isolation
+  const user = await User.findOne(shopQuery(req, { _id: req.params.id }));
   if (!user) {
     throw new AppError('User not found', 404);
+  }
+
+  // OWNER can update staff members
+  if (user.role === 'OWNER' && req.user._id.toString() !== user._id.toString()) {
+    throw new AppError('Cannot modify another owner', 403);
   }
 
   // Update fields
   if (name) user.name = name;
   if (email) user.email = email;
   if (phone) user.phone = phone;
-  if (role) user.role = role;
+  if (role && ['OWNER', 'STAFF'].includes(role)) user.role = role;
   if (status) user.status = status;
+  if (permissions && user.role === 'STAFF') user.permissions = permissions;
 
   await user.save();
 
@@ -259,19 +276,20 @@ const updateUser = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc    Block/Unblock user (Admin)
+ * @desc    Block/Unblock user (OWNER only)
  * @route   PATCH /api/admin/users/:id/block
- * @access  Private/Admin
+ * @access  Private/OWNER
  */
 const toggleUserBlock = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.params.id);
+  // CRITICAL: Find user with tenant isolation
+  const user = await User.findOne(shopQuery(req, { _id: req.params.id }));
   if (!user) {
     throw new AppError('User not found', 404);
   }
 
-  // Can't block admin users
-  if (user.role === 'admin') {
-    throw new AppError('Cannot block admin users', 400);
+  // Can't block OWNER users
+  if (user.role === 'OWNER') {
+    throw new AppError('Cannot block OWNER users', 400);
   }
 
   user.status = user.status === 'active' ? 'blocked' : 'active';
@@ -285,19 +303,20 @@ const toggleUserBlock = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc    Delete user (Soft delete - Admin)
+ * @desc    Delete user (Soft delete - OWNER only)
  * @route   DELETE /api/admin/users/:id
- * @access  Private/Admin
+ * @access  Private/OWNER
  */
 const deleteUser = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.params.id);
+  // CRITICAL: Find user with tenant isolation
+  const user = await User.findOne(shopQuery(req, { _id: req.params.id }));
   if (!user) {
     throw new AppError('User not found', 404);
   }
 
-  // Can't delete admin users
-  if (user.role === 'admin') {
-    throw new AppError('Cannot delete admin users', 400);
+  // Can't delete OWNER users
+  if (user.role === 'OWNER') {
+    throw new AppError('Cannot delete OWNER users', 400);
   }
 
   user.isDeleted = true;
@@ -312,14 +331,15 @@ const deleteUser = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc    Get audit logs (Admin)
+ * @desc    Get audit logs (OWNER or STAFF with permission)
  * @route   GET /api/admin/audit-logs
- * @access  Private/Admin
+ * @access  Private
  */
 const getAuditLogs = asyncHandler(async (req, res) => {
   const { page = 1, limit = 50, action, entity } = req.query;
 
-  const query = {};
+  // CRITICAL: Base query with tenant isolation
+  const query = shopQuery(req);
   if (action) query.action = action;
   if (entity) query.entity = entity;
 
@@ -348,9 +368,9 @@ const getAuditLogs = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc    Update user status (Admin)
+ * @desc    Update user status (OWNER only)
  * @route   PATCH /api/admin/users/:id/status
- * @access  Private/Admin
+ * @access  Private/OWNER
  */
 const updateUserStatus = asyncHandler(async (req, res) => {
   const { status } = req.body;
@@ -359,14 +379,15 @@ const updateUserStatus = asyncHandler(async (req, res) => {
     throw new AppError('Invalid status. Must be active or blocked', 400);
   }
 
-  const user = await User.findById(req.params.id);
+  // CRITICAL: Find user with tenant isolation
+  const user = await User.findOne(shopQuery(req, { _id: req.params.id }));
   if (!user) {
     throw new AppError('User not found', 404);
   }
 
-  // Can't block admin users
-  if (user.role === 'admin' && status === 'blocked') {
-    throw new AppError('Cannot block admin users', 400);
+  // Can't block OWNER users
+  if (user.role === 'OWNER' && status === 'blocked') {
+    throw new AppError('Cannot block OWNER users', 400);
   }
 
   user.status = status;
@@ -380,18 +401,19 @@ const updateUserStatus = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc    Update user role (Admin)
+ * @desc    Update user role (OWNER only)
  * @route   PATCH /api/admin/users/:id/role
- * @access  Private/Admin
+ * @access  Private/OWNER
  */
 const updateUserRole = asyncHandler(async (req, res) => {
   const { role } = req.body;
   
-  if (!['user', 'admin'].includes(role)) {
-    throw new AppError('Invalid role. Must be user or admin', 400);
+  if (!['OWNER', 'STAFF'].includes(role)) {
+    throw new AppError('Invalid role. Must be OWNER or STAFF', 400);
   }
 
-  const user = await User.findById(req.params.id);
+  // CRITICAL: Find user with tenant isolation
+  const user = await User.findOne(shopQuery(req, { _id: req.params.id }));
   if (!user) {
     throw new AppError('User not found', 404);
   }

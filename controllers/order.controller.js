@@ -6,22 +6,26 @@ const { asyncHandler, AppError } = require('../middlewares/error.middleware');
 const { sendOrderPlacedEmail, sendOrderStatusEmail, sendInvoiceEmail } = require('../services/email.service');
 const { sendOrderPlacedWhatsApp, sendOrderStatusWhatsApp, sendInvoiceWhatsApp, notifyAdminNewOrder } = require('../services/whatsapp.service');
 const { generateInvoice } = require('../services/invoice.service');
+const { shopQuery } = require('../middlewares/tenantIsolation.middleware');
 const path = require('path');
+const fs = require('fs');
 
 /**
- * Generate unique order number
+ * Generate unique order number (per shop)
  */
-const generateOrderNumber = async () => {
+const generateOrderNumber = async (shopId) => {
   const date = new Date();
   const year = date.getFullYear().toString().slice(-2);
   const month = (date.getMonth() + 1).toString().padStart(2, '0');
   const day = date.getDate().toString().padStart(2, '0');
   
-  // Count orders today to get sequence
+  // Count orders today for this shop to get sequence
   const startOfDay = new Date(date.setHours(0, 0, 0, 0));
   const endOfDay = new Date(date.setHours(23, 59, 59, 999));
   
+  // CRITICAL: Count orders per shop
   const todayOrdersCount = await Order.countDocuments({
+    shopId,
     createdAt: { $gte: startOfDay, $lte: endOfDay }
   });
   
@@ -37,16 +41,16 @@ const generateOrderNumber = async () => {
 const createOrder = asyncHandler(async (req, res) => {
   const { shippingAddress } = req.body;
 
-  // Get user cart
-  const cart = await Cart.findOne({ user: req.user._id }).populate('items.product');
+  // Get user cart with tenant isolation
+  const cart = await Cart.findOne(shopQuery(req, { user: req.user._id })).populate('items.product');
 
   if (!cart || cart.items.length === 0) {
     throw new AppError('Cart is empty', 400);
   }
 
-  // Validate stock for all items
+  // Validate stock for all items with tenant isolation
   for (const item of cart.items) {
-    const product = await Product.findById(item.product._id);
+    const product = await Product.findOne(shopQuery(req, { _id: item.product._id }));
     
     if (!product) {
       throw new AppError(`Product ${item.product.name} not found`, 404);
@@ -83,11 +87,12 @@ const createOrder = asyncHandler(async (req, res) => {
   const tax = 0; // No tax in phase 1
   const totalAmount = subtotal + shippingCharges + tax;
 
-  // Generate order number
-  const orderNumber = await generateOrderNumber();
+  // Generate order number for this shop
+  const orderNumber = await generateOrderNumber(req.shopId);
 
-  // Create order
+  // CRITICAL: Create order with shopId
   const order = await Order.create({
+    shopId: req.shopId,
     orderNumber,
     user: req.user._id,
     items: orderItems,
@@ -103,10 +108,10 @@ const createOrder = asyncHandler(async (req, res) => {
     orderStatus: 'PLACED'
   });
 
-  // Deduct stock for all items
+  // Deduct stock for all items with tenant isolation
   for (const item of cart.items) {
-    await Product.findByIdAndUpdate(
-      item.product._id,
+    await Product.findOneAndUpdate(
+      shopQuery(req, { _id: item.product._id }),
       { $inc: { stock: -item.quantity } }
     );
   }
@@ -139,7 +144,8 @@ const createOrder = asyncHandler(async (req, res) => {
 const getMyOrders = asyncHandler(async (req, res) => {
   const { page = 1, limit = 10, status } = req.query;
 
-  const query = { user: req.user._id };
+  // CRITICAL: Build query with tenant isolation
+  const query = shopQuery(req, { user: req.user._id });
   if (status) query.orderStatus = status;
 
   const skip = (page - 1) * limit;
@@ -171,14 +177,15 @@ const getMyOrders = asyncHandler(async (req, res) => {
  * @access  Private
  */
 const getOrder = asyncHandler(async (req, res) => {
-  const order = await Order.findById(req.params.id).populate('user', 'name email phone');
+  // CRITICAL: Find order with tenant isolation
+  const order = await Order.findOne(shopQuery(req, { _id: req.params.id })).populate('user', 'name email phone');
 
   if (!order) {
     throw new AppError('Order not found', 404);
   }
 
-  // Check ownership (users can only see their own orders, admins can see all)
-  if (order.user._id.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+  // Check ownership (users can only see their own orders, OWNER can see all)
+  if (order.user._id.toString() !== req.user._id.toString() && req.user.role !== 'OWNER') {
     throw new AppError('Not authorized to access this order', 403);
   }
 
@@ -196,7 +203,8 @@ const getOrder = asyncHandler(async (req, res) => {
 const cancelOrder = asyncHandler(async (req, res) => {
   const { reason } = req.body;
 
-  const order = await Order.findById(req.params.id);
+  // CRITICAL: Find order with tenant isolation
+  const order = await Order.findOne(shopQuery(req, { _id: req.params.id }));
 
   if (!order) {
     throw new AppError('Order not found', 404);
@@ -212,10 +220,10 @@ const cancelOrder = asyncHandler(async (req, res) => {
     throw new AppError('Order cannot be cancelled at this stage', 400);
   }
 
-  // Restore stock
+  // Restore stock with tenant isolation
   for (const item of order.items) {
-    await Product.findByIdAndUpdate(
-      item.product,
+    await Product.findOneAndUpdate(
+      shopQuery(req, { _id: item.product }),
       { $inc: { stock: item.quantity } }
     );
   }
@@ -244,25 +252,53 @@ const cancelOrder = asyncHandler(async (req, res) => {
  * @access  Private
  */
 const downloadInvoice = asyncHandler(async (req, res) => {
-  const order = await Order.findById(req.params.id);
+  // CRITICAL: Find order with tenant isolation
+  const order = await Order.findOne(shopQuery(req, { _id: req.params.id }))
+    .populate({
+      path: 'shopId',
+      populate: {
+        path: 'ownerId',
+        select: 'email phone'
+      }
+    });
 
   if (!order) {
     throw new AppError('Order not found', 404);
   }
 
-  // Check ownership
-  if (order.user.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+  // Check ownership (users can only access their own invoices, OWNER can see all)
+  if (order.user.toString() !== req.user._id.toString() && req.user.role !== 'OWNER' && req.user.role !== 'STAFF') {
     throw new AppError('Not authorized to access this invoice', 403);
   }
 
-  // Generate invoice if not exists
+  const user = await User.findById(order.user);
+  const shop = order.shopId;
+  const shopOwner = shop.ownerId;
+  
+  
+  // Check if invoice needs to be generated or regenerated
+  let shouldGenerate = false;
+  let filepath;
+  
   if (!order.invoiceUrl) {
-    const user = await User.findById(order.user);
-    const { filename, filepath, invoiceNumber } = await generateInvoice(order, user);
+    shouldGenerate = true;
+  } else {
+    // Check if file exists
+    filepath = path.join(__dirname, '../invoices', path.basename(order.invoiceUrl));
+    if (!fs.existsSync(filepath)) {
+      shouldGenerate = true;
+    }
+  }
+  
+  // Generate invoice if needed
+  if (shouldGenerate) {
+    const { filename, filepath: newFilepath, invoiceNumber } = await generateInvoice(order, user, shop, shopOwner);
     
     order.invoiceUrl = `/invoices/${filename}`;
     order.invoiceNumber = invoiceNumber;
     await order.save();
+    
+    filepath = newFilepath;
 
     // Send invoice notification
     Promise.all([
@@ -272,7 +308,9 @@ const downloadInvoice = asyncHandler(async (req, res) => {
   }
 
   // Send file
-  const filepath = path.join(__dirname, '../invoices', path.basename(order.invoiceUrl));
+  if (!filepath) {
+    filepath = path.join(__dirname, '../invoices', path.basename(order.invoiceUrl));
+  }
   res.download(filepath);
 });
 

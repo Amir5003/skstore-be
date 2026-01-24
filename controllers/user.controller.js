@@ -1,6 +1,7 @@
 const User = require('../models/User.model');
 const Order = require('../models/Order.model');
 const { asyncHandler, AppError } = require('../middlewares/error.middleware');
+const { shopQuery } = require('../middlewares/tenantIsolation.middleware');
 
 /**
  * @desc    Get user profile
@@ -8,7 +9,8 @@ const { asyncHandler, AppError } = require('../middlewares/error.middleware');
  * @access  Private
  */
 const getProfile = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.user._id);
+  // CRITICAL: Find user with tenant isolation
+  const user = await User.findOne(shopQuery(req, { _id: req.user._id })).populate('shopId', 'name slug plan enabledModules');
 
   res.status(200).json({
     success: true,
@@ -24,7 +26,8 @@ const getProfile = asyncHandler(async (req, res) => {
 const updateProfile = asyncHandler(async (req, res) => {
   const { name, phone } = req.body;
 
-  const user = await User.findById(req.user._id);
+  // CRITICAL: Find user with tenant isolation
+  const user = await User.findOne(shopQuery(req, { _id: req.user._id }));
 
   if (name) user.name = name;
   if (phone) user.phone = phone;
@@ -44,7 +47,8 @@ const updateProfile = asyncHandler(async (req, res) => {
  * @access  Private
  */
 const addAddress = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.user._id);
+  // CRITICAL: Find user with tenant isolation
+  const user = await User.findOne(shopQuery(req, { _id: req.user._id }));
 
   // If this is the first address or marked as default, set it as default
   if (req.body.isDefault || user.addresses.length === 0) {
@@ -68,7 +72,8 @@ const addAddress = asyncHandler(async (req, res) => {
  * @access  Private
  */
 const updateAddress = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.user._id);
+  // CRITICAL: Find user with tenant isolation
+  const user = await User.findOne(shopQuery(req, { _id: req.user._id }));
   const address = user.addresses.id(req.params.addressId);
 
   if (!address) {
@@ -102,7 +107,8 @@ const updateAddress = asyncHandler(async (req, res) => {
  * @access  Private
  */
 const deleteAddress = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.user._id);
+  // CRITICAL: Find user with tenant isolation
+  const user = await User.findOne(shopQuery(req, { _id: req.user._id }));
   
   user.addresses = user.addresses.filter(
     addr => addr._id.toString() !== req.params.addressId
@@ -123,7 +129,8 @@ const deleteAddress = asyncHandler(async (req, res) => {
  * @access  Private
  */
 const getOrderHistory = asyncHandler(async (req, res) => {
-  const orders = await Order.find({ user: req.user._id })
+  // CRITICAL: Find orders with tenant isolation
+  const orders = await Order.find(shopQuery(req, { user: req.user._id }))
     .sort('-createdAt')
     .limit(50);
 

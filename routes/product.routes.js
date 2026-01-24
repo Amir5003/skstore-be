@@ -10,12 +10,25 @@ const {
   toggleProductStatus,
   getCategories
 } = require('../controllers/product.controller');
-const { protect, authorize, optionalAuth } = require('../middlewares/auth.middleware');
+const { protect } = require('../middlewares/auth.middleware');
+const { tenantIsolation } = require('../middlewares/tenantIsolation.middleware');
+const { requirePermission, PERMISSIONS } = require('../middlewares/roleAuth.middleware');
 const { logAdminAction } = require('../middlewares/auditLog.middleware');
 const validate = require('../middlewares/validate.middleware');
 const upload = require('../utils/upload.util');
+const { optionalAuth } = require('../middlewares/optionalAuth.middleware');
 
 const router = express.Router();
+
+// Public routes with optional authentication
+// If authenticated, uses JWT shopId. If not, requires shopSlug query parameter
+router.get('/', optionalAuth, getProducts);
+router.get('/categories/list', optionalAuth, getCategories);
+router.get('/slug/:slug', optionalAuth, getProductBySlug);
+router.get('/:id', optionalAuth, getProduct);
+
+// Protected routes - require authentication and tenant isolation
+router.use(protect, tenantIsolation);
 
 // Validation rules
 const productValidation = [
@@ -34,17 +47,10 @@ const productValidation = [
     .notEmpty().withMessage('Category is required')
 ];
 
-// Public routes
-router.get('/', optionalAuth, getProducts);
-router.get('/categories/list', getCategories);
-router.get('/slug/:slug', optionalAuth, getProductBySlug);
-router.get('/:id', optionalAuth, getProduct);
-
-// Admin routes
+// Routes requiring product management permission
 router.post(
   '/',
-  protect,
-  authorize('admin'),
+  requirePermission(PERMISSIONS.MANAGE_PRODUCTS),
   upload.array('images', 5),
   productValidation,
   validate,
@@ -54,8 +60,7 @@ router.post(
 
 router.put(
   '/:id',
-  protect,
-  authorize('admin'),
+  requirePermission(PERMISSIONS.MANAGE_PRODUCTS),
   upload.array('images', 5),
   logAdminAction('UPDATE_PRODUCT', 'PRODUCT'),
   updateProduct
@@ -63,16 +68,14 @@ router.put(
 
 router.delete(
   '/:id',
-  protect,
-  authorize('admin'),
+  requirePermission(PERMISSIONS.MANAGE_PRODUCTS),
   logAdminAction('DELETE_PRODUCT', 'PRODUCT'),
   deleteProduct
 );
 
 router.patch(
   '/:id/toggle-active',
-  protect,
-  authorize('admin'),
+  requirePermission(PERMISSIONS.MANAGE_PRODUCTS),
   logAdminAction('ACTIVATE_PRODUCT', 'PRODUCT'),
   toggleProductStatus
 );

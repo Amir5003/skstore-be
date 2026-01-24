@@ -1,21 +1,38 @@
 const jwt = require('jsonwebtoken');
 
 /**
- * Generate JWT access token
+ * Generate JWT access token with shopId for multi-tenancy
+ * CRITICAL: shopId must be included in token for tenant isolation
  */
-const generateAccessToken = (userId) => {
-  return jwt.sign({ id: userId }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRE || '15m'
-  });
+const generateAccessToken = (userId, shopId, role) => {
+  return jwt.sign(
+    { 
+      id: userId,
+      shopId: shopId, // CRITICAL: Required for tenant isolation
+      role: role      // Required for role-based authorization
+    },
+    process.env.JWT_SECRET,
+    {
+      expiresIn: process.env.JWT_EXPIRE || '15m'
+    }
+  );
 };
 
 /**
- * Generate JWT refresh token
+ * Generate JWT refresh token with shopId
  */
-const generateRefreshToken = (userId) => {
-  return jwt.sign({ id: userId }, process.env.JWT_REFRESH_SECRET, {
-    expiresIn: process.env.JWT_REFRESH_EXPIRE || '7d'
-  });
+const generateRefreshToken = (userId, shopId, role) => {
+  return jwt.sign(
+    {
+      id: userId,
+      shopId: shopId,
+      role: role
+    },
+    process.env.JWT_REFRESH_SECRET,
+    {
+      expiresIn: process.env.JWT_REFRESH_EXPIRE || '7d'
+    }
+  );
 };
 
 /**

@@ -1,11 +1,13 @@
 const Product = require('../models/Product.model');
+const Shop = require('../models/Shop.model');
 const { asyncHandler, AppError } = require('../middlewares/error.middleware');
+const { shopQuery } = require('../middlewares/tenantIsolation.middleware');
 const { uploadMultipleToCloudinary, deleteFromCloudinary } = require('../services/cloudinary.service');
 
 /**
  * @desc    Get all products (with filters, search, sort, pagination)
  * @route   GET /api/products
- * @access  Public
+ * @access  Public (with shopSlug) or Private (with auth)
  */
 const getProducts = asyncHandler(async (req, res) => {
   const {
@@ -16,11 +18,35 @@ const getProducts = asyncHandler(async (req, res) => {
     minPrice,
     maxPrice,
     sort = '-createdAt',
-    isActive
+    isActive,
+    shopSlug // For public access
   } = req.query;
 
-  // Build query
-  const query = {};
+  let query = {};
+
+  // CRITICAL: Determine shop context
+  if (req.user && req.user.shopId) {
+    // Authenticated user - manually add shopId (tenantIsolation middleware not applied on public routes)
+    query.shopId = req.user.shopId._id || req.user.shopId;
+    
+    // Only show active products to STAFF users
+    if (isActive !== undefined) {
+      query.isActive = isActive === 'true';
+    } else if (req.user.role === 'STAFF') {
+      query.isActive = true;
+    }
+  } else if (shopSlug) {
+    // Public access - find shop by slug
+    const shop = await Shop.findOne({ slug: shopSlug, isActive: true });
+    if (!shop) {
+      throw new AppError('Shop not found or inactive', 404);
+    }
+    query.shopId = shop._id;
+    query.isActive = true; // Only show active products to public
+  } else {
+    // No authentication and no shopSlug - this is an error
+    throw new AppError('Authentication or shop slug is required', 400);
+  }
 
   if (category) query.category = category;
   if (search) query.$text = { $search: search };
@@ -28,13 +54,6 @@ const getProducts = asyncHandler(async (req, res) => {
     query.finalPrice = {};
     if (minPrice) query.finalPrice.$gte = Number(minPrice);
     if (maxPrice) query.finalPrice.$lte = Number(maxPrice);
-  }
-  
-  // Only show active products to non-admin users
-  if (isActive !== undefined) {
-    query.isActive = isActive === 'true';
-  } else if (!req.user || req.user.role !== 'admin') {
-    query.isActive = true;
   }
 
   // Pagination
@@ -66,17 +85,18 @@ const getProducts = asyncHandler(async (req, res) => {
 /**
  * @desc    Get single product
  * @route   GET /api/products/:id
- * @access  Public
+ * @access  Private
  */
 const getProduct = asyncHandler(async (req, res) => {
-  const product = await Product.findById(req.params.id);
+  // CRITICAL: Filter by shopId for tenant isolation
+  const product = await Product.findOne(shopQuery(req, { _id: req.params.id }));
 
   if (!product) {
     throw new AppError('Product not found', 404);
   }
 
-  // Check if product is active (unless admin)
-  if (!product.isActive && (!req.user || req.user.role !== 'admin')) {
+  // Check if product is active (unless OWNER)
+  if (!product.isActive && req.user.role !== 'OWNER') {
     throw new AppError('Product not found', 404);
   }
 
@@ -89,16 +109,18 @@ const getProduct = asyncHandler(async (req, res) => {
 /**
  * @desc    Get product by slug
  * @route   GET /api/products/slug/:slug
- * @access  Public
+ * @access  Public (optionalAuth)
  */
 const getProductBySlug = asyncHandler(async (req, res) => {
+  // Fetch product by slug (no tenant isolation - slug is globally unique)
   const product = await Product.findOne({ slug: req.params.slug });
 
   if (!product) {
     throw new AppError('Product not found', 404);
   }
 
-  if (!product.isActive && (!req.user || req.user.role !== 'admin')) {
+  // Only show inactive products to shop owner/staff
+  if (!product.isActive && (!req.user || req.user.role === 'CUSTOMER')) {
     throw new AppError('Product not found', 404);
   }
 
@@ -109,9 +131,9 @@ const getProductBySlug = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc    Create product (Admin only)
+ * @desc    Create product (OWNER or STAFF with permission)
  * @route   POST /api/products
- * @access  Private/Admin
+ * @access  Private
  */
 const createProduct = asyncHandler(async (req, res) => {
   const { name, description, price, discount, stock, category, brand, specifications, images } = req.body;
@@ -126,8 +148,9 @@ const createProduct = asyncHandler(async (req, res) => {
     productImages = images.filter(img => img && img.trim());
   }
 
-  // Create product
+  // CRITICAL: Create product with shopId for tenant isolation
   const product = await Product.create({
+    shopId: req.shopId, // CRITICAL: Must include shopId
     name,
     description,
     price,
@@ -136,8 +159,7 @@ const createProduct = asyncHandler(async (req, res) => {
     category,
     brand,
     specifications,
-    images: productImages,
-    createdBy: req.user._id
+    images: productImages
   });
 
   res.status(201).json({
@@ -148,12 +170,13 @@ const createProduct = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc    Update product (Admin only)
+ * @desc    Update product (OWNER or STAFF with permission)
  * @route   PUT /api/products/:id
- * @access  Private/Admin
+ * @access  Private
  */
 const updateProduct = asyncHandler(async (req, res) => {
-  let product = await Product.findById(req.params.id);
+  // CRITICAL: Find product with tenant isolation
+  let product = await Product.findOne(shopQuery(req, { _id: req.params.id }));
 
   if (!product) {
     throw new AppError('Product not found', 404);
@@ -182,9 +205,9 @@ const updateProduct = asyncHandler(async (req, res) => {
     req.body.images = req.body.images.filter(img => img && (typeof img === 'string' ? img.trim() : true));
   }
 
-  // Update product
-  product = await Product.findByIdAndUpdate(
-    req.params.id,
+  // Update product with tenant isolation
+  product = await Product.findOneAndUpdate(
+    shopQuery(req, { _id: req.params.id }),
     { ...req.body, updatedBy: req.user._id },
     { new: true, runValidators: true }
   );
@@ -197,12 +220,13 @@ const updateProduct = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc    Delete product (Soft delete - Admin only)
+ * @desc    Delete product (Soft delete - OWNER or STAFF with permission)
  * @route   DELETE /api/products/:id
- * @access  Private/Admin
+ * @access  Private
  */
 const deleteProduct = asyncHandler(async (req, res) => {
-  const product = await Product.findById(req.params.id);
+  // CRITICAL: Find product with tenant isolation
+  const product = await Product.findOne(shopQuery(req, { _id: req.params.id }));
 
   if (!product) {
     throw new AppError('Product not found', 404);
@@ -221,12 +245,13 @@ const deleteProduct = asyncHandler(async (req, res) => {
 });
 
 /**
- * @desc    Toggle product active status (Admin only)
+ * @desc    Toggle product active status (OWNER or STAFF with permission)
  * @route   PATCH /api/products/:id/toggle-active
- * @access  Private/Admin
+ * @access  Private
  */
 const toggleProductStatus = asyncHandler(async (req, res) => {
-  const product = await Product.findById(req.params.id);
+  // CRITICAL: Find product with tenant isolation
+  const product = await Product.findOne(shopQuery(req, { _id: req.params.id }));
 
   if (!product) {
     throw new AppError('Product not found', 404);

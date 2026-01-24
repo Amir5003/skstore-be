@@ -8,12 +8,13 @@ const {
   clearCart
 } = require('../controllers/cart.controller');
 const { protect } = require('../middlewares/auth.middleware');
+const { tenantIsolation } = require('../middlewares/tenantIsolation.middleware');
 const validate = require('../middlewares/validate.middleware');
 
 const router = express.Router();
 
-// All cart routes require authentication
-router.use(protect);
+// All cart routes require authentication and tenant isolation
+router.use(protect, tenantIsolation);
 
 // Validation rules
 const addToCartValidation = [

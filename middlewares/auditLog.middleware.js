@@ -1,7 +1,7 @@
 const AuditLog = require('../models/AuditLog.model');
 
 /**
- * Middleware to log admin actions
+ * Middleware to log admin actions (with tenant isolation)
  */
 const logAdminAction = (action, entity) => {
   return async (req, res, next) => {
@@ -12,8 +12,9 @@ const logAdminAction = (action, entity) => {
     res.json = function(data) {
       // Only log if action was successful
       if (data.success) {
-        // Log asynchronously without blocking response
+        // CRITICAL: Log with shopId for tenant isolation
         AuditLog.create({
+          shopId: req.shopId, // CRITICAL: Include shopId
           user: req.user._id,
           action,
           entity,

@@ -1,8 +1,10 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User.model');
+const Shop = require('../models/Shop.model');
 
 /**
  * Verify JWT token and authenticate user
+ * CRITICAL: Extracts shopId and role from token for multi-tenancy
  */
 const protect = async (req, res, next) => {
   try {
@@ -23,23 +25,65 @@ const protect = async (req, res, next) => {
     // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    // Get user from token
-    req.user = await User.findById(decoded.id).select('-password');
+    // CRITICAL: Validate shopId exists in token
+    if (!decoded.shopId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token format. Missing shop context.'
+      });
+    }
 
-    if (!req.user) {
+    // Get user from token with shop context
+    const user = await User.findOne({
+      _id: decoded.id,
+      shopId: decoded.shopId
+    }).select('-password');
+
+    if (!user) {
       return res.status(401).json({
         success: false,
         message: 'User not found. Token is invalid.'
       });
     }
 
-    // Check if user is blocked
-    if (req.user.status === 'blocked') {
+    // Check if user is active
+    if (!user.isActive) {
       return res.status(403).json({
         success: false,
-        message: 'Your account has been blocked. Please contact support.'
+        message: 'Your account has been deactivated. Please contact shop owner.'
       });
     }
+
+    // Verify shop exists and is active
+    const shop = await Shop.findById(decoded.shopId);
+    if (!shop) {
+      return res.status(403).json({
+        success: false,
+        message: 'Shop not found. Invalid token.'
+      });
+    }
+
+    if (!shop.isActive) {
+      return res.status(403).json({
+        success: false,
+        message: 'Shop is suspended. Please contact support.'
+      });
+    }
+
+    // Attach user with shopId and role to request
+    req.user = {
+      _id: user._id,
+      shopId: user.shopId,
+      role: user.role,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      permissions: user.permissions
+    };
+
+    // Update last login
+    user.lastLogin = new Date();
+    await user.save();
 
     next();
   } catch (error) {
